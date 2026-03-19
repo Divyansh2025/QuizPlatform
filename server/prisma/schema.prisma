@@ -1,0 +1,56 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  username  String   @unique
+  password  String
+  createdAt DateTime @default(now())
+  quizzes   Quiz[]
+  attempts  QuizAttempt[]
+}
+
+model Quiz {
+  id            String   @id @default(cuid())
+  title         String
+  description   String
+  category      String
+  difficulty    String   // easy, medium, hard
+  timeLimit     Int      // seconds per question
+  isAIGenerated Boolean  @default(false)
+  createdBy     User?    @relation(fields: [createdById], references: [id])
+  createdById   String?
+  createdAt     DateTime @default(now())
+  questions     Question[]
+  attempts      QuizAttempt[]
+}
+
+model Question {
+  id            String @id @default(cuid())
+  text          String
+  options       String // JSON array of strings
+  correctAnswer Int    // index of correct option (0-based)
+  explanation   String?
+  quiz          Quiz   @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  quizId        String
+}
+
+model QuizAttempt {
+  id             String   @id @default(cuid())
+  score          Int
+  totalQuestions Int
+  timeTaken      Int      // seconds
+  answers        String   // JSON array of selected answers
+  user           User     @relation(fields: [userId], references: [id])
+  userId         String
+  quiz           Quiz     @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  quizId         String
+  completedAt    DateTime @default(now())
+}
