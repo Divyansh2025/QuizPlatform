@@ -17,14 +17,28 @@ router.post('/generate', authenticateToken, async (req: AuthRequest, res: Respon
     const clampedQuestions = Math.min(Math.max(Number(numQuestions) || 5, 3), 10);
     const validDifficulty = ['easy', 'medium', 'hard'].includes(difficulty) ? difficulty : 'medium';
 
+    const groqKey = process.env.GROQ_API_KEY;
     const geminiKey = process.env.GEMINI_API_KEY;
     const openaiKey = process.env.OPENAI_API_KEY;
 
     let questions;
     let usedProvider = 'fallback';
 
-    // Try Gemini first
-    if (geminiKey && geminiKey !== 'your-gemini-api-key') {
+    // Try Groq first (free & fast)
+    if (!questions && groqKey && groqKey !== 'your-groq-api-key') {
+      try {
+        questions = await generateWithGroq(groqKey, sanitizedTopic, validDifficulty, clampedQuestions);
+        usedProvider = 'groq';
+      } catch (groqError: any) {
+        console.warn('⚠️ GROQ FAILED:', {
+          status: groqError.status || groqError.code || 'unknown',
+          message: groqError.message?.split('\n')[0],
+        });
+      }
+    }
+
+    // Fallback to Gemini
+    if (!questions && geminiKey && geminiKey !== 'your-gemini-api-key') {
       try {
         questions = await generateWithGemini(geminiKey, sanitizedTopic, validDifficulty, clampedQuestions);
         usedProvider = 'gemini';
@@ -36,7 +50,7 @@ router.post('/generate', authenticateToken, async (req: AuthRequest, res: Respon
       }
     }
 
-    // Fallback to GPT if Gemini failed or unavailable
+    // Fallback to GPT
     if (!questions && openaiKey && openaiKey !== 'your-openai-api-key') {
       try {
         questions = await generateWithGPT(openaiKey, sanitizedTopic, validDifficulty, clampedQuestions);
@@ -187,6 +201,61 @@ Requirements:
 
   if (!Array.isArray(questions) || questions.length === 0) {
     throw new Error('Invalid questions array from GPT');
+  }
+
+  return questions.map((q: any) => ({
+    text: String(q.text || '').slice(0, 500),
+    options: Array.isArray(q.options) ? q.options.slice(0, 4).map((o: any) => String(o).slice(0, 200)) : ['A', 'B', 'C', 'D'],
+    correctAnswer: typeof q.correctAnswer === 'number' ? Math.min(Math.max(q.correctAnswer, 0), 3) : 0,
+    explanation: q.explanation ? String(q.explanation).slice(0, 500) : null,
+  }));
+}
+
+async function generateWithGroq(
+  apiKey: string,
+  topic: string,
+  difficulty: string,
+  numQuestions: number
+) {
+  const Groq = (await import('groq-sdk')).default;
+  const groq = new Groq({ apiKey });
+
+  const prompt = `Generate a quiz with exactly ${numQuestions} multiple-choice questions about "${topic}" at ${difficulty} difficulty level.
+
+Return ONLY valid JSON (no markdown, no code blocks) in this exact format:
+[
+  {
+    "text": "Question text here?",
+    "options": ["Option A", "Option B", "Option C", "Option D"],
+    "correctAnswer": 0,
+    "explanation": "Brief explanation of the correct answer"
+  }
+]
+
+Requirements:
+- Each question must have exactly 4 options
+- correctAnswer is the 0-based index of the correct option
+- Questions should be factually accurate
+- ${difficulty === 'easy' ? 'Keep questions straightforward and beginner-friendly' : difficulty === 'hard' ? 'Make questions challenging and nuanced' : 'Balance difficulty for intermediate learners'}`;
+
+  const completion = await groq.chat.completions.create({
+    model: 'llama-3.3-70b-versatile',
+    messages: [
+      { role: 'system', content: 'You are a quiz generator. Return ONLY valid JSON arrays, no other text.' },
+      { role: 'user', content: prompt },
+    ],
+    temperature: 0.7,
+  });
+
+  const text = completion.choices[0]?.message?.content || '';
+
+  const jsonMatch = text.match(/\[[\s\S]*\]/);
+  if (!jsonMatch) throw new Error('Invalid Groq response format');
+
+  const questions = JSON.parse(jsonMatch[0]);
+
+  if (!Array.isArray(questions) || questions.length === 0) {
+    throw new Error('Invalid questions array from Groq');
   }
 
   return questions.map((q: any) => ({
